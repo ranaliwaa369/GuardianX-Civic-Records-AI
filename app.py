@@ -45,7 +45,7 @@ page=st.sidebar.radio('Workspace',['Overview','Records','Search Workspace','Huma
 
 if page=='Overview':
     st.subheader('Public records workflow — transparent by design')
-    st.info('Prototype demonstration only. Keyword-based retrieval is not semantic or generative AI. Human reviewers retain all disclosure and exemption decisions.')
+    st.info('Prototype demonstration only. Search includes keyword matching, TF-IDF ranking, and semantic AI embeddings. Human review remains required. Human reviewers retain all disclosure and exemption decisions.')
     a,b,d=st.columns(3)
     a.metric('Records',c.execute('SELECT COUNT(*) FROM records').fetchone()[0])
     b.metric('Review decisions',c.execute('SELECT COUNT(*) FROM reviews').fetchone()[0])
