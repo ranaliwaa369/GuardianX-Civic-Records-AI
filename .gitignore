@@ -9,3 +9,9 @@ __pycache__/
 .venv/
 .DS_Store
 *.zip
+
+# Local development backups
+app.py.backup
+app.py.before_semantic_ai
+app.py.description_backup
+.agents/
