@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 import sqlite3, hashlib, json, re
 from pathlib import Path
 from datetime import datetime, timezone
@@ -20,6 +22,20 @@ def now(): return datetime.now(timezone.utc).isoformat(timespec='seconds')
 def audit(c,action,detail): c.execute('INSERT INTO audit(action,detail,created) VALUES (?,?,?)',(action,detail,now()));c.commit()
 
 def rows(c,sql,args=()): return [dict(x) for x in c.execute(sql,args).fetchall()]
+
+
+def ai_assisted_search(records, query):
+    if not records or not query.strip():
+        return []
+    documents = [r["content"] for r in records]
+    vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))
+    matrix = vectorizer.fit_transform(documents + [query])
+    scores = cosine_similarity(matrix[-1:], matrix[:-1]).flatten()
+    return sorted(
+        [(float(score), record) for score, record in zip(scores, records) if score > 0],
+        key=lambda x: x[0], reverse=True
+    )
+
 
 c=connect()
 st.markdown('''<style>.block-container{padding-top:2rem;max-width:1250px}h1{color:#143d58}.stButton button[kind=primary]{background:#146c84}</style>''',unsafe_allow_html=True)
@@ -64,27 +80,36 @@ elif page=='Records':
 elif page=='Search Workspace':
     st.subheader('Search workspace')
     query=st.text_input('Search records',value='traffic safety road closures transportation planning')
-    st.caption('Deterministic keyword matching. Results show excerpts from uploaded records, not generated answers.')
+    mode=st.radio('Search method',['Keyword Search','AI-Assisted TF-IDF Search'],horizontal=True)
+    st.caption('TF-IDF ranks text similarity; it is not a semantic language model. Human review remains required.')
     if query.strip():
-        terms=set(re.findall(r'[a-z0-9]{3,}',query.lower()))
+        records=rows(c,'SELECT * FROM records ORDER BY id DESC')
         found=[]
-        for r in rows(c,'SELECT * FROM records ORDER BY id DESC'):
-            content=r['content'];score=sum(len(re.findall(r'\b'+re.escape(t)+r'\b',content.lower())) for t in terms)
-            if score:
-                positions=[content.lower().find(t) for t in terms if t in content.lower()]
-                p=min(positions) if positions else 0
-                found.append((score,r,content[max(0,p-90):p+300]))
-        found.sort(key=lambda x:-x[0])
+        if mode=='AI-Assisted TF-IDF Search':
+            for score,r in ai_assisted_search(records,query):
+                found.append((f'{score:.3f}',r,r['content'][:350]))
+        else:
+            terms=set(re.findall(r'[a-z0-9]{3,}',query.lower()))
+            for r in records:
+                content=r['content']
+                score=sum(len(re.findall(r'\\b'+re.escape(t)+r'\\b',content.lower())) for t in terms)
+                if score:
+                    positions=[content.lower().find(t) for t in terms if t in content.lower()]
+                    pos=min(positions) if positions else 0
+                    found.append((score,r,content[max(0,pos-90):pos+300]))
+            found.sort(key=lambda x:-x[0])
         st.write(f'**{len(found)} matching record(s)**')
         for score,r,snip in found:
             with st.container(border=True):
-                st.markdown(f"**{r['name']}** · Keyword hits: {score}")
+                st.markdown(f"**{r['name']}** · Relevance score: {score}")
                 st.text(snip)
                 if st.button('Send to human review',key=f"review_{r['id']}"):
-                    st.session_state['selected_record']=r['id'];st.session_state['selected_query']=query
-                    audit(c,'SEARCH',f"Query: {query}; selected record: {r['id']}")
+                    st.session_state['selected_record']=r['id']
+                    st.session_state['selected_query']=query
+                    audit(c,'SEARCH',f"Method: {mode}; Query: {query}; selected record: {r['id']}")
                     st.success('Selected. Open Human Review from the sidebar.')
-        if not found:st.info('No keyword matches. Try “traffic safety”.')
+        if not found:
+            st.info('No matching records found.')
 
 elif page=='Human Review':
     st.subheader('Human review')
