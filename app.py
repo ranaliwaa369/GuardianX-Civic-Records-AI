@@ -77,39 +77,94 @@ elif page=='Records':
         with st.expander(f"#{r['id']} · {r['name']}"):
             st.text(r['content'][:12000]);st.caption('SHA-256: '+r['sha'])
 
+
 elif page=='Search Workspace':
     st.subheader('Search workspace')
-    query=st.text_input('Search records',value='traffic safety road closures transportation planning')
-    mode=st.radio('Search method',['Keyword Search','AI-Assisted TF-IDF Search'],horizontal=True)
-    st.caption('TF-IDF ranks text similarity; it is not a semantic language model. Human review remains required.')
-    if query.strip():
-        records=rows(c,'SELECT * FROM records ORDER BY id DESC')
+    query=st.text_input('Search records',value='traffic safety road closures')
+    mode=st.radio(
+        'Search method',
+        ['Keyword Search','AI-Assisted TF-IDF Search','Semantic AI Search'],
+        horizontal=True
+    )
+    st.caption(
+        'Semantic AI uses a pretrained embedding model. '
+        'Results are suggestions, not disclosure decisions. '
+        'Human review remains required.'
+    )
+
+    records=rows(c,'SELECT * FROM records ORDER BY id DESC')
+
+    if query.strip() and records:
         found=[]
-        if mode=='AI-Assisted TF-IDF Search':
-            for score,r in ai_assisted_search(records,query):
-                found.append((f'{score:.3f}',r,r['content'][:350]))
+
+        if mode=='Semantic AI Search':
+            from sentence_transformers import SentenceTransformer
+            from sklearn.metrics.pairwise import cosine_similarity
+
+            @st.cache_resource(show_spinner='Loading Semantic AI model...')
+            def load_semantic_model():
+                return SentenceTransformer(
+                    'sentence-transformers/all-MiniLM-L6-v2'
+                )
+
+            with st.spinner('Analyzing document meaning...'):
+                model=load_semantic_model()
+                documents=[r['content'] for r in records]
+                embeddings=model.encode(
+                    [query]+documents,
+                    convert_to_numpy=True,
+                    normalize_embeddings=True
+                )
+                scores=cosine_similarity(
+                    embeddings[:1],embeddings[1:]
+                )[0]
+
+                for score,r in zip(scores,records):
+                    if float(score)>=0.20:
+                        found.append((float(score),r,r['content'][:500]))
+
+        elif mode=='AI-Assisted TF-IDF Search':
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            from sklearn.metrics.pairwise import cosine_similarity
+
+            documents=[r['content'] for r in records]
+            vectorizer=TfidfVectorizer(stop_words='english')
+            matrix=vectorizer.fit_transform([query]+documents)
+            scores=cosine_similarity(matrix[:1],matrix[1:])[0]
+
+            for score,r in zip(scores,records):
+                if float(score)>0:
+                    found.append((float(score),r,r['content'][:500]))
+
         else:
             terms=set(re.findall(r'[a-z0-9]{3,}',query.lower()))
             for r in records:
                 content=r['content']
-                score=sum(len(re.findall(r'\\b'+re.escape(t)+r'\\b',content.lower())) for t in terms)
+                score=sum(
+                    len(re.findall(r'\b'+re.escape(t)+r'\b',content.lower()))
+                    for t in terms
+                )
                 if score:
-                    positions=[content.lower().find(t) for t in terms if t in content.lower()]
-                    pos=min(positions) if positions else 0
-                    found.append((score,r,content[max(0,pos-90):pos+300]))
-            found.sort(key=lambda x:-x[0])
+                    found.append((float(score),r,content[:500]))
+
+        found.sort(key=lambda x:x[0],reverse=True)
         st.write(f'**{len(found)} matching record(s)**')
-        for score,r,snip in found:
+
+        for score,r,snippet in found:
             with st.container(border=True):
-                st.markdown(f"**{r['name']}** · Relevance score: {score}")
-                st.text(snip)
+                st.markdown(f"**{r['name']}** · Relevance score: {score:.3f}")
+                st.text(snippet)
                 if st.button('Send to human review',key=f"review_{r['id']}"):
                     st.session_state['selected_record']=r['id']
                     st.session_state['selected_query']=query
-                    audit(c,'SEARCH',f"Method: {mode}; Query: {query}; selected record: {r['id']}")
+                    audit(c,'SEARCH',f"Method: {mode}; Query: {query}; Record: {r['id']}")
                     st.success('Selected. Open Human Review from the sidebar.')
+
         if not found:
-            st.info('No matching records found.')
+            st.info('No matching records found. Try another query.')
+
+    elif not records:
+        st.warning('Load or upload a record first.')
 
 elif page=='Human Review':
     st.subheader('Human review')
